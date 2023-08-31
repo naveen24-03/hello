@@ -1,93 +1,57 @@
 import streamlit as st
 from PyPDF2 import PdfFileReader
-from transformers import AutoTokenizer, pipeline, logging
-from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
-from faiss import IndexFlatL2
+from faiss import IndexFlatL2, IndexIVFFlat
 
-# Initialize the tokenizer and model with LLaMa-7b model from Hugging Face
-model_name_or_path = "TheBloke/Llama-2-7b-Chat-GPTQ"
-model_basename = "model"
+# Load the necessary models
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+model = AutoModel.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
 
-use_triton = False
-
-tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True)
-
-model = AutoGPTQForCausalLM.from_quantized(model_name_or_path,
-        model_basename=model_basename,
-        use_safetensors=True,
-        trust_remote_code=True,
-        device="cpu",
-        use_triton=use_triton,
-        quantize_config=None)
-
-"""
-To download from a specific branch, use the revision parameter, as in this example:
-
-model = AutoGPTQForCausalLM.from_quantized(model_name_or_path,
-        revision="gptq-4bit-32g-actorder_True",
-        model_basename=model_basename,
-        use_safetensors=True,
-        trust_remote_code=True,
-        device="cpu",
-        quantize_config=None)
-"""
-
-# Initialize the sentence transformer with LLaMa-7b model from Hugging Face
-sent_trans = SentenceTransformer(model_name_or_path)
-
-# Initialize the FAISS index
-index = IndexFlatL2(768)
-
-@st.cache
-def process_pdf(pdf_file):
-    # Read the PDF file
-    with open(pdf_file, "rb") as f:
-        pdf = PdfFileReader(f)
-        text = ""
-        # Extract the text from each page
-        for page in pdf.pages:
-            text += page.extract_text()
-    # Split the text into chunks
-    chunks = text.split("\n\n")
-    # Embed the chunks using the sentence transformer
-    embeddings = sent_trans.encode(chunks)
-    # Add the embeddings to the FAISS index
-    index.add(embeddings)
+# Function to read PDF and split into chunks
+def read_pdf(file):
+    pdf = PdfFileReader(file)
+    text = ""
+    for page in range(pdf.getNumPages()):
+        text += pdf.getPage(page).extractText()
+    chunks = text.split('.')  # Splitting into chunks at every period
     return chunks
 
-def answer_question(question, chunks):
-    # Tokenize the question
-    input_ids = tokenizer.encode(question, return_tensors="pt")
-    # Generate an answer using the model
-    answer = model.generate(input_ids)
-    answer_text = tokenizer.decode(answer[0], skip_special_tokens=True)
-    # Embed the answer using the sentence transformer
-    answer_embedding = sent_trans.encode([answer_text])[0]
-    # Search for the most similar chunk in the FAISS index
-    _, indices = index.search(answer_embedding.reshape(1, -1), 1)
-    # Return the most similar chunk as the answer
-    return chunks[indices[0][0]]
+# Function to embed chunks
+def embed_chunks(chunks):
+    embeddings = sentence_transformer.encode(chunks)
+    return embeddings
 
+# Function to create FAISS index
+def create_faiss_index(embeddings):
+    dimension = len(embeddings[0])  # Dimension of embeddings
+    index = IndexFlatL2(dimension)
+    index.add(embeddings)
+    return index
+
+# Function to search FAISS index
+def search_faiss_index(query, index, chunks):
+    query_embedding = sentence_transformer.encode([query])[0]
+    D, I = index.search(query_embedding.reshape(1, -1), k=1)
+    return chunks[I[0][0]]
+
+# Main function
 def main():
-    st.set_page_config(page_title="Intelliread", page_icon=":books:", layout="wide")
+    st.set_page_config(page_title="Ask your PDF", page_icon=":books:")
+    st.title("Ask your PDF")
     
-    st.title("Intelliread 💬")
+    uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"], accept_multiple_files=False)
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Upload your PDF")
-        pdf_file = st.file_uploader("", type=["pdf"], accept_multiple_files=False, key="pdf")
-    
-    with col2:
-        st.write("")
-    
-    if pdf_file is not None:
-        chunks = process_pdf(pdf_file)
-        question = st.text_input("Ask a question")
-        if question:
-            answer = answer_question(question, chunks)
+    if uploaded_file is not None:
+        with st.spinner('Processing...'):
+            chunks = read_pdf(uploaded_file)
+            embeddings = embed_chunks(chunks)
+            index = create_faiss_index(embeddings)
+
+        query = st.text_input("Enter your query")
+        if query:
+            answer = search_faiss_index(query, index, chunks)
             st.write(answer)
 
 if __name__ == "__main__":
