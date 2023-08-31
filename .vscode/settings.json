@@ -1,4 +1,0 @@
-{
-    "appService.defaultWebAppToDeploy": "/subscriptions/22d46341-90a6-4b67-b668-fa98b059344d/resourceGroups/intelliread_group/providers/Microsoft.Web/sites/intelliread",
-    "appService.deploySubpath": "."
-}
